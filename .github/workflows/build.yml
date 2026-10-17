@@ -55,8 +55,8 @@ jobs:
                   applicationId "com.example.tvadskipper"
                   minSdk 21
                   targetSdk 34
-                  versionCode 4
-                  versionName "1.3"
+                  versionCode 6
+                  versionName "1.5"
               }
 
               compileOptions {
@@ -122,107 +122,66 @@ jobs:
 
               private val handler = Handler(Looper.getMainLooper())
               private var lastTriggerTime = 0L
-              private val cooldownMillis = 2500L
+              private val cooldownMillis = 2000L
 
-              // 1. 觸發跳過的廣告關鍵字（鎖定「按广告返回」與倒數計時）
-              private val adKeywords = listOf(
-                  "按广告", "广告返回", "按廣告", "廣告返回",
-                  "跳过广告", "跳過廣告", "略過廣告", 
-                  "秒后", "秒後", "Skip Ad"
-              )
-
-              // 2. 防誤觸排除清單（當畫面出現這些字時，代表使用者主動按了暫停，絕不按返回鍵）
-              private val pauseIgnoreKeywords = listOf(
-                  "繼續播放", "继续播放", "按返回繼續", "按返回继续", "暫停", "暂停"
-              )
+              // 針對 StreamFlix 抓到的廣告專屬元件 ID
+              private val targetAdOverlayId = "com.streamflixtv.brave.retreat:id/utv_ad_overlay"
+              private val targetSkipButtonId = "com.streamflixtv.brave.retreat:id/tv_utv_player_ad_skip"
 
               private val scanRunnable = object : Runnable {
                   override fun run() {
-                      checkScreenForAds()
-                      handler.postDelayed(this, 800)
+                      checkAndSkipAds()
+                      handler.postDelayed(this, 500) // 每 0.5 秒檢查一次
                   }
               }
 
               override fun onServiceConnected() {
                   super.onServiceConnected()
-                  Toast.makeText(applicationContext, "TV廣告自動巡邏(防暫停誤觸版)已啟動！", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(applicationContext, "StreamFlix 廣告秒殺專用外掛已啟動！", Toast.LENGTH_SHORT).show()
                   handler.post(scanRunnable)
               }
 
               override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-                  checkScreenForAds()
+                  checkAndSkipAds()
               }
 
-              private fun checkScreenForAds() {
+              private fun checkAndSkipAds() {
                   val currentTime = System.currentTimeMillis()
                   if (currentTime - lastTriggerTime < cooldownMillis) return
 
-                  // 先檢查是否處於「手動暫停」狀態，若是則直接跳過不處理
-                  if (isPauseScreen(rootInActiveWindow)) return
-                  for (window in windows) {
-                      if (isPauseScreen(window.root)) return
-                  }
+                  val root = rootInActiveWindow ?: return
+                  
+                  // 1. 尋找廣告專屬圖層或跳過按鈕
+                  val skipNode = findNodeById(root, targetSkipButtonId)
+                  val overlayNode = findNodeById(root, targetAdOverlayId)
 
-                  // 尋找是否有廣告關鍵字
-                  var adNode: AccessibilityNodeInfo? = findAdNode(rootInActiveWindow)
-                  if (adNode == null) {
-                      for (window in windows) {
-                          adNode = findAdNode(window.root)
-                          if (adNode != null) break
-                      }
-                  }
-
-                  if (adNode != null) {
+                  // 如果畫面中同時存在廣告圖層或跳過按鈕，代表廣告正在播放
+                  if (skipNode != null || overlayNode != null) {
                       lastTriggerTime = currentTime
 
                       handler.post {
-                          Toast.makeText(applicationContext, "抓到廣告！執行跳過...", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(applicationContext, "偵測到串流廣告！秒殺中...", Toast.LENGTH_SHORT).show()
                       }
 
-                      adNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                      adNode.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                      // 優先嘗試直接點擊右上角的「跳過/倒數」按鈕
+                      if (skipNode != null) {
+                          skipNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                      }
 
+                      // 雙重保險：直接發送返回鍵關閉廣告畫面
                       performGlobalAction(GLOBAL_ACTION_BACK)
-                      handler.postDelayed({
-                          performGlobalAction(GLOBAL_ACTION_BACK)
-                      }, 400)
                   }
               }
 
-              // 檢查畫面是否包含「按返回繼續播放」等暫停字眼
-              private fun isPauseScreen(node: AccessibilityNodeInfo?): Boolean {
-                  if (node == null) return false
-                  val text = node.text?.toString() ?: ""
-                  val contentDesc = node.contentDescription?.toString() ?: ""
-
-                  for (ignoreWord in pauseIgnoreKeywords) {
-                      if (text.contains(ignoreWord, ignoreCase = true) || 
-                          contentDesc.contains(ignoreWord, ignoreCase = true)) {
-                          return true
-                      }
-                  }
-
-                  for (i in 0 until node.childCount) {
-                      if (isPauseScreen(node.getChild(i))) return true
-                  }
-                  return false
-              }
-
-              private fun findAdNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+              private fun findNodeById(node: AccessibilityNodeInfo?, targetId: String): AccessibilityNodeInfo? {
                   if (node == null) return null
-
-                  val text = node.text?.toString() ?: ""
-                  val contentDesc = node.contentDescription?.toString() ?: ""
-
-                  for (keyword in adKeywords) {
-                      if (text.contains(keyword, ignoreCase = true) || 
-                          contentDesc.contains(keyword, ignoreCase = true)) {
-                          return node
-                      }
+                  
+                  if (node.viewIdResourceName == targetId) {
+                      return node
                   }
 
                   for (i in 0 until node.childCount) {
-                      val found = findAdNode(node.getChild(i))
+                      val found = findNodeById(node.getChild(i), targetId)
                       if (found != null) return found
                   }
                   return null
