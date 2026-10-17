@@ -55,8 +55,8 @@ jobs:
                   applicationId "com.example.tvadskipper"
                   minSdk 21
                   targetSdk 34
-                  versionCode 3
-                  versionName "1.2"
+                  versionCode 4
+                  versionName "1.3"
               }
 
               compileOptions {
@@ -124,15 +124,18 @@ jobs:
               private var lastTriggerTime = 0L
               private val cooldownMillis = 2500L
 
-              // 針對「按广告返回15秒」及常見廣告字眼設定關鍵字
+              // 1. 觸發跳過的廣告關鍵字（鎖定「按广告返回」與倒數計時）
               private val adKeywords = listOf(
                   "按广告", "广告返回", "按廣告", "廣告返回",
-                  "广告", "跳过", "秒后", "倒计时",
-                  "廣告", "跳過", "略過", "秒後", 
-                  "Sponsored", "Skip Ad"
+                  "跳过广告", "跳過廣告", "略過廣告", 
+                  "秒后", "秒後", "Skip Ad"
               )
 
-              // 每 800 毫秒主動掃描一次電視畫面，不依賴播放器的被動通知
+              // 2. 防誤觸排除清單（當畫面出現這些字時，代表使用者主動按了暫停，絕不按返回鍵）
+              private val pauseIgnoreKeywords = listOf(
+                  "繼續播放", "继续播放", "按返回繼續", "按返回继续", "暫停", "暂停"
+              )
+
               private val scanRunnable = object : Runnable {
                   override fun run() {
                       checkScreenForAds()
@@ -142,7 +145,7 @@ jobs:
 
               override fun onServiceConnected() {
                   super.onServiceConnected()
-                  Toast.makeText(applicationContext, "TV廣告自動巡邏已啟動！", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(applicationContext, "TV廣告自動巡邏(防暫停誤觸版)已啟動！", Toast.LENGTH_SHORT).show()
                   handler.post(scanRunnable)
               }
 
@@ -154,8 +157,14 @@ jobs:
                   val currentTime = System.currentTimeMillis()
                   if (currentTime - lastTriggerTime < cooldownMillis) return
 
-                  var adNode: AccessibilityNodeInfo? = findAdNode(rootInActiveWindow)
+                  // 先檢查是否處於「手動暫停」狀態，若是則直接跳過不處理
+                  if (isPauseScreen(rootInActiveWindow)) return
+                  for (window in windows) {
+                      if (isPauseScreen(window.root)) return
+                  }
 
+                  // 尋找是否有廣告關鍵字
+                  var adNode: AccessibilityNodeInfo? = findAdNode(rootInActiveWindow)
                   if (adNode == null) {
                       for (window in windows) {
                           adNode = findAdNode(window.root)
@@ -170,11 +179,9 @@ jobs:
                           Toast.makeText(applicationContext, "抓到廣告！執行跳過...", Toast.LENGTH_SHORT).show()
                       }
 
-                      // 動作 1：如果該小框本身支援點擊，直接幫你點它
                       adNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                       adNode.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
 
-                      // 動作 2：立即發送返回鍵，並在 0.4 秒後補發第二次確保退出
                       performGlobalAction(GLOBAL_ACTION_BACK)
                       handler.postDelayed({
                           performGlobalAction(GLOBAL_ACTION_BACK)
@@ -182,24 +189,36 @@ jobs:
                   }
               }
 
+              // 檢查畫面是否包含「按返回繼續播放」等暫停字眼
+              private fun isPauseScreen(node: AccessibilityNodeInfo?): Boolean {
+                  if (node == null) return false
+                  val text = node.text?.toString() ?: ""
+                  val contentDesc = node.contentDescription?.toString() ?: ""
+
+                  for (ignoreWord in pauseIgnoreKeywords) {
+                      if (text.contains(ignoreWord, ignoreCase = true) || 
+                          contentDesc.contains(ignoreWord, ignoreCase = true)) {
+                          return true
+                      }
+                  }
+
+                  for (i in 0 until node.childCount) {
+                      if (isPauseScreen(node.getChild(i))) return true
+                  }
+                  return false
+              }
+
               private fun findAdNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
                   if (node == null) return null
 
                   val text = node.text?.toString() ?: ""
                   val contentDesc = node.contentDescription?.toString() ?: ""
-                  val viewId = node.viewIdResourceName ?: ""
 
                   for (keyword in adKeywords) {
                       if (text.contains(keyword, ignoreCase = true) || 
                           contentDesc.contains(keyword, ignoreCase = true)) {
                           return node
                       }
-                  }
-
-                  // 額外檢查元件 ID 是否明顯為廣告跳過按鈕
-                  if (viewId.contains("skip_ad", ignoreCase = true) || 
-                      viewId.contains("ad_countdown", ignoreCase = true)) {
-                      return node
                   }
 
                   for (i in 0 until node.childCount) {
