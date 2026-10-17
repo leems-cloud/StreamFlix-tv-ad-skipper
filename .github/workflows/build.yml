@@ -55,8 +55,8 @@ jobs:
                   applicationId "com.example.tvadskipper"
                   minSdk 30
                   targetSdk 34
-                  versionCode 14
-                  versionName "3.0-Screenshot"
+                  versionCode 15
+                  versionName "3.1-Screenshot"
               }
 
               compileOptions {
@@ -103,7 +103,7 @@ jobs:
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeAllMask"
               android:accessibilityFeedbackType="feedbackGeneric"
-              android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagCaptureFingerprintGestures"
+              android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagRequestFingerprintGestures"
               android:canTakeScreenshot="true"
               android:canRetrieveWindowContent="true"
               android:notificationTimeout="100" />
@@ -131,7 +131,7 @@ jobs:
               private val screenshotRunnable = object : Runnable {
                   override fun run() {
                       captureAndAnalyzeScreen()
-                      handler.postDelayed(this, 1000) // 每 1 秒截圖分析一次
+                      handler.postDelayed(this, 1000)
                   }
               }
 
@@ -141,9 +141,7 @@ jobs:
                   handler.post(screenshotRunnable)
               }
 
-              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-                  // 不需要依賴事件
-              }
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
               private fun captureAndAnalyzeScreen() {
                   val currentTime = System.currentTimeMillis()
@@ -156,13 +154,10 @@ jobs:
                           try {
                               val hardwareBitmap = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
                               if (hardwareBitmap != null) {
-                                  // 將硬體點陣圖轉換為可讀取的 Bitmap
                                   val bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
                                   hardwareBitmap.recycle()
 
                                   if (bitmap != null) {
-                                      // 分析畫面右上角區域（對應你照片中「按返回跳过」出現的位置）
-                                      // 假設電視解析度 1920x1080，右上角框大約在 X: 1500~1900, Y: 0~150
                                       if (checkRegionForAd(bitmap)) {
                                           lastTriggerTime = System.currentTimeMillis()
                                           handler.post {
@@ -190,14 +185,11 @@ jobs:
                   val width = bitmap.width
                   val height = bitmap.height
 
-                  // 檢查右上角區域（根據 1920x1080 比例換算像素範圍）
                   val startX = (width * 0.75).toInt()
                   val endX = width - 10
                   val startY = 10
                   val endY = (height * 0.15).toInt()
 
-                  // 在該區域中抽樣檢查是否有符合廣告黑底白字或深色外框的特徵
-                  // 這裡示範檢查是否有高對比度的深色區塊或特定按鈕顏色
                   var targetPixelCount = 0
                   for (x in startX until endX step 15) {
                       for (y in startY until endY step 15) {
@@ -206,14 +198,11 @@ jobs:
                           val green = Color.green(pixel)
                           val blue = Color.blue(pixel)
 
-                          // 偵測類似深色半透明背景框或白字像素
                           if (red < 50 && green < 50 && blue < 50) {
                               targetPixelCount++
                           }
                       }
                   }
-
-                  // 如果採樣點達到一定數量，判定為廣告浮動框出現
                   return targetPixelCount > 8
               }
 
