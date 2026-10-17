@@ -1,0 +1,2 @@
+rootProject.name = "TVAdSkipper"
+include ':app'
