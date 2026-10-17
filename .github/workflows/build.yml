@@ -55,8 +55,8 @@ jobs:
                   applicationId "com.example.tvadskipper"
                   minSdk 21
                   targetSdk 34
-                  versionCode 2
-                  versionName "1.1"
+                  versionCode 3
+                  versionName "1.2"
               }
 
               compileOptions {
@@ -98,7 +98,6 @@ jobs:
           </manifest>
           EOF
 
-          # 加入 flagRetrieveInteractiveWindows 確保能抓到右上角浮動小框
           cat << 'EOF' > app/src/main/res/xml/accessibility_service_config.xml
           <?xml version="1.0" encoding="utf-8"?>
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
@@ -121,73 +120,103 @@ jobs:
 
           class AdSkipperService : AccessibilityService() {
 
+              private val handler = Handler(Looper.getMainLooper())
               private var lastTriggerTime = 0L
-              private val cooldownMillis = 2500L // 2.5秒冷卻時間
+              private val cooldownMillis = 2500L
 
-              // 繁簡體廣告關鍵字全包（包含你看到的「按广告返回」）
+              // 針對「按广告返回15秒」及常見廣告字眼設定關鍵字
               private val adKeywords = listOf(
                   "按广告", "广告返回", "按廣告", "廣告返回",
-                  "广告", "跳过", "秒后", 
+                  "广告", "跳过", "秒后", "倒计时",
                   "廣告", "跳過", "略過", "秒後", 
                   "Sponsored", "Skip Ad"
               )
 
-              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-                  var foundAd = false
-
-                  // 1. 檢查主視窗與事件來源節點
-                  if (containsAdKeyword(rootInActiveWindow) || containsAdKeyword(event?.source)) {
-                      foundAd = true
-                  }
-
-                  // 2. 檢查所有浮動視窗/小框圖層 (針對右上角獨立小框)
-                  if (!foundAd) {
-                      for (window in windows) {
-                          if (containsAdKeyword(window.root)) {
-                              foundAd = true
-                              break
-                          }
-                      }
-                  }
-
-                  if (foundAd) {
-                      val currentTime = System.currentTimeMillis()
-                      if (currentTime - lastTriggerTime > cooldownMillis) {
-                          lastTriggerTime = currentTime
-                          
-                          // 在電視螢幕下方彈出提示，方便確認外掛已成功抓到文字
-                          Handler(Looper.getMainLooper()).post {
-                              Toast.makeText(applicationContext, "偵測到廣告！自動按返回鍵", Toast.LENGTH_SHORT).show()
-                          }
-
-                          // 執行全域返回鍵
-                          performGlobalAction(GLOBAL_ACTION_BACK)
-                      }
+              // 每 800 毫秒主動掃描一次電視畫面，不依賴播放器的被動通知
+              private val scanRunnable = object : Runnable {
+                  override fun run() {
+                      checkScreenForAds()
+                      handler.postDelayed(this, 800)
                   }
               }
 
-              private fun containsAdKeyword(node: AccessibilityNodeInfo?): Boolean {
-                  if (node == null) return false
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  Toast.makeText(applicationContext, "TV廣告自動巡邏已啟動！", Toast.LENGTH_SHORT).show()
+                  handler.post(scanRunnable)
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  checkScreenForAds()
+              }
+
+              private fun checkScreenForAds() {
+                  val currentTime = System.currentTimeMillis()
+                  if (currentTime - lastTriggerTime < cooldownMillis) return
+
+                  var adNode: AccessibilityNodeInfo? = findAdNode(rootInActiveWindow)
+
+                  if (adNode == null) {
+                      for (window in windows) {
+                          adNode = findAdNode(window.root)
+                          if (adNode != null) break
+                      }
+                  }
+
+                  if (adNode != null) {
+                      lastTriggerTime = currentTime
+
+                      handler.post {
+                          Toast.makeText(applicationContext, "抓到廣告！執行跳過...", Toast.LENGTH_SHORT).show()
+                      }
+
+                      // 動作 1：如果該小框本身支援點擊，直接幫你點它
+                      adNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                      adNode.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+
+                      // 動作 2：立即發送返回鍵，並在 0.4 秒後補發第二次確保退出
+                      performGlobalAction(GLOBAL_ACTION_BACK)
+                      handler.postDelayed({
+                          performGlobalAction(GLOBAL_ACTION_BACK)
+                      }, 400)
+                  }
+              }
+
+              private fun findAdNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+                  if (node == null) return null
 
                   val text = node.text?.toString() ?: ""
                   val contentDesc = node.contentDescription?.toString() ?: ""
+                  val viewId = node.viewIdResourceName ?: ""
 
                   for (keyword in adKeywords) {
                       if (text.contains(keyword, ignoreCase = true) || 
                           contentDesc.contains(keyword, ignoreCase = true)) {
-                          return true
+                          return node
                       }
+                  }
+
+                  // 額外檢查元件 ID 是否明顯為廣告跳過按鈕
+                  if (viewId.contains("skip_ad", ignoreCase = true) || 
+                      viewId.contains("ad_countdown", ignoreCase = true)) {
+                      return node
                   }
 
                   for (i in 0 until node.childCount) {
-                      if (containsAdKeyword(node.getChild(i))) {
-                          return true
-                      }
+                      val found = findAdNode(node.getChild(i))
+                      if (found != null) return found
                   }
-                  return false
+                  return null
               }
 
-              override fun onInterrupt() {}
+              override fun onDestroy() {
+                  super.onDestroy()
+                  handler.removeCallbacks(scanRunnable)
+              }
+
+              override fun onInterrupt() {
+                  handler.removeCallbacks(scanRunnable)
+              }
           }
           EOF
 
