@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK All-in-One
 
 on:
   push:
@@ -9,12 +9,101 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Ensure XML Config Exists
+      - name: Generate Entire Android Project Structure
         run: |
+          # 1. 清除舊檔案，建立標準資料夾結構
+          rm -rf app settings.gradle build.gradle
+          mkdir -p app/src/main/java/com/example/tvadskipper
           mkdir -p app/src/main/res/xml
+
+          # 2. 建立 settings.gradle
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TVAdSkipper"
+          include ':app'
+          EOF
+
+          # 3. 建立根目錄 build.gradle
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+          }
+          EOF
+
+          # 4. 建立 app/build.gradle
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.example.tvadskipper'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.tvadskipper"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+          EOF
+
+          # 5. 建立 AndroidManifest.xml
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-feature android:name="android.software.leanback" android:required="false" />
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="TV廣告跳過助手"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.DeviceDefault">
+
+                  <service
+                      android:name=".AdSkipperService"
+                      android:exported="true"
+                      android:label="TV廣告自動返回服務"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          # 6. 建立 accessibility_service_config.xml
           cat << 'EOF' > app/src/main/res/xml/accessibility_service_config.xml
           <?xml version="1.0" encoding="utf-8"?>
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
@@ -23,6 +112,67 @@ jobs:
               android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds"
               android:canRetrieveWindowContent="true"
               android:notificationTimeout="100" />
+          EOF
+
+          # 7. 建立核心程式碼 AdSkipperService.kt
+          cat << 'EOF' > app/src/main/java/com/example/tvadskipper/AdSkipperService.kt
+          package com.example.tvadskipper
+
+          import android.accessibilityservice.AccessibilityService
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+
+          class AdSkipperService : AccessibilityService() {
+
+              private var lastTriggerTime = 0L
+              private val cooldownMillis = 3000L
+
+              // 廣告關鍵字清單（日後若要增減關鍵字，直接改這裡即可）
+              private val adKeywords = listOf(
+                  "廣告", "跳過廣告", "略過廣告", "秒後可跳過", "廣告時間", "Sponsored", "Skip Ad"
+              )
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  if (event == null) return
+
+                  if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+                      event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+
+                      val rootNode = rootInActiveWindow ?: return
+
+                      if (containsAdKeyword(rootNode)) {
+                          val currentTime = System.currentTimeMillis()
+                          if (currentTime - lastTriggerTime > cooldownMillis) {
+                              performGlobalAction(GLOBAL_ACTION_BACK)
+                              lastTriggerTime = currentTime
+                          }
+                      }
+                  }
+              }
+
+              private fun containsAdKeyword(node: AccessibilityNodeInfo?): Boolean {
+                  if (node == null) return false
+
+                  val text = node.text?.toString() ?: ""
+                  val contentDesc = node.contentDescription?.toString() ?: ""
+
+                  for (keyword in adKeywords) {
+                      if (text.contains(keyword, ignoreCase = true) || 
+                          contentDesc.contains(keyword, ignoreCase = true)) {
+                          return true
+                      }
+                  }
+
+                  for (i in 0 until node.childCount) {
+                      if (containsAdKeyword(node.getChild(i))) {
+                          return true
+                      }
+                  }
+                  return false
+              }
+
+              override fun onInterrupt() {}
+          }
           EOF
 
       - name: Set up JDK 17
