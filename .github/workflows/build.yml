@@ -53,10 +53,10 @@ jobs:
 
               defaultConfig {
                   applicationId "com.example.tvadskipper"
-                  minSdk 21
+                  minSdk 30
                   targetSdk 34
-                  versionCode 12
-                  versionName "2.1"
+                  versionCode 14
+                  versionName "3.0-Screenshot"
               }
 
               compileOptions {
@@ -78,14 +78,14 @@ jobs:
 
               <application
                   android:allowBackup="true"
-                  android:label="TV廣告跳過助手"
+                  android:label="TV廣告截圖識別助手"
                   android:supportsRtl="true"
                   android:theme="@android:style/Theme.DeviceDefault">
 
                   <service
-                      android:name=".AdSkipperService"
+                      android:name=".ScreenshotAdService"
                       android:exported="true"
-                      android:label="TV廣告自動返回服務"
+                      android:label="TV廣告智慧截圖服務"
                       android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
                       <intent-filter>
                           <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -103,128 +103,127 @@ jobs:
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeAllMask"
               android:accessibilityFeedbackType="feedbackGeneric"
-              android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows"
+              android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagCaptureFingerprintGestures"
+              android:canTakeScreenshot="true"
               android:canRetrieveWindowContent="true"
-              android:notificationTimeout="30" />
+              android:notificationTimeout="100" />
           EOF
 
-          cat << 'EOF' > app/src/main/java/com/example/tvadskipper/AdSkipperService.kt
+          cat << 'EOF' > app/src/main/java/com/example/tvadskipper/ScreenshotAdService.kt
           package com.example.tvadskipper
 
           import android.accessibilityservice.AccessibilityService
-          import android.view.accessibility.AccessibilityEvent
-          import android.view.accessibility.AccessibilityNodeInfo
-          import android.widget.Toast
+          import android.graphics.Bitmap
+          import android.graphics.Color
           import android.os.Handler
           import android.os.Looper
+          import android.view.Display
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.Toast
 
-          class AdSkipperService : AccessibilityService() {
+          class ScreenshotAdService : AccessibilityService() {
 
               private val handler = Handler(Looper.getMainLooper())
               private var lastTriggerTime = 0L
-              private val cooldownMillis = 2000L
+              private val cooldownMillis = 3000L
+              private var isScanning = false
 
-              // 精準對應畫面右上角出現的字眼
-              private val adKeywords = listOf(
-                  "按返回跳过", "按返回跳過", "按返回", "跳过", "跳過"
-              )
-
-              // 防誤觸排除清單：如果畫面上有暫停或繼續播放，絕對不按返回
-              private val pauseIgnoreKeywords = listOf(
-                  "繼續播放", "继续播放", "按返回繼續", "按返回继续", "暫停", "暂停"
-              )
-
-              private val scanRunnable = object : Runnable {
+              private val screenshotRunnable = object : Runnable {
                   override fun run() {
-                      checkAndSkip()
-                      handler.postDelayed(this, 250) // 每 0.25 秒高速掃描
+                      captureAndAnalyzeScreen()
+                      handler.postDelayed(this, 1000) // 每 1 秒截圖分析一次
                   }
               }
 
               override fun onServiceConnected() {
                   super.onServiceConnected()
-                  Toast.makeText(applicationContext, "極流TV廣告攔截已啟動！", Toast.LENGTH_SHORT).show()
-                  handler.post(scanRunnable)
+                  Toast.makeText(applicationContext, "TV廣告智慧截圖辨識已啟動！", Toast.LENGTH_SHORT).show()
+                  handler.post(screenshotRunnable)
               }
 
               override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-                  checkAndSkip()
+                  // 不需要依賴事件
               }
 
-              private fun checkAndSkip() {
+              private fun captureAndAnalyzeScreen() {
                   val currentTime = System.currentTimeMillis()
-                  if (currentTime - lastTriggerTime < cooldownMillis) return
+                  if (currentTime - lastTriggerTime < cooldownMillis || isScanning) return
+                  if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return
 
-                  val root = rootInActiveWindow ?: return
+                  isScanning = true
+                  takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                      override fun onSuccess(screenshot: ScreenshotResult) {
+                          try {
+                              val hardwareBitmap = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                              if (hardwareBitmap != null) {
+                                  // 將硬體點陣圖轉換為可讀取的 Bitmap
+                                  val bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                  hardwareBitmap.recycle()
 
-                  // 1. 檢查是否處於手動暫停狀態，若是則略過
-                  if (isPauseScreen(root)) return
-
-                  // 2. 掃描畫面是否包含「按返回跳过」等關鍵字
-                  if (hasAdText(root)) {
-                      lastTriggerTime = currentTime
-
-                      handler.post {
-                          Toast.makeText(applicationContext, "偵測到返回跳過廣告，執行返回！", Toast.LENGTH_SHORT).show()
+                                  if (bitmap != null) {
+                                      // 分析畫面右上角區域（對應你照片中「按返回跳过」出現的位置）
+                                      // 假設電視解析度 1920x1080，右上角框大約在 X: 1500~1900, Y: 0~150
+                                      if (checkRegionForAd(bitmap)) {
+                                          lastTriggerTime = System.currentTimeMillis()
+                                          handler.post {
+                                              Toast.makeText(applicationContext, "影像辨識到廣告，執行返回！", Toast.LENGTH_SHORT).show()
+                                          }
+                                          performGlobalAction(GLOBAL_ACTION_BACK)
+                                      }
+                                      bitmap.recycle()
+                                  }
+                              }
+                          } catch (e: Exception) {
+                              e.printStackTrace()
+                          } finally {
+                              isScanning = false
+                          }
                       }
 
-                      // 強制執行全域返回鍵
-                      performGlobalAction(GLOBAL_ACTION_BACK)
-                  } else {
-                      // 檢查所有浮動視窗
-                      for (window in windows) {
-                          if (window.root != null && hasAdText(window.root)) {
-                              lastTriggerTime = currentTime
-                              performGlobalAction(GLOBAL_ACTION_BACK)
-                              break
+                      override fun onFailure(errorCode: Int) {
+                          isScanning = false
+                      }
+                  })
+              }
+
+              private fun checkRegionForAd(bitmap: Bitmap): Boolean {
+                  val width = bitmap.width
+                  val height = bitmap.height
+
+                  // 檢查右上角區域（根據 1920x1080 比例換算像素範圍）
+                  val startX = (width * 0.75).toInt()
+                  val endX = width - 10
+                  val startY = 10
+                  val endY = (height * 0.15).toInt()
+
+                  // 在該區域中抽樣檢查是否有符合廣告黑底白字或深色外框的特徵
+                  // 這裡示範檢查是否有高對比度的深色區塊或特定按鈕顏色
+                  var targetPixelCount = 0
+                  for (x in startX until endX step 15) {
+                      for (y in startY until endY step 15) {
+                          val pixel = bitmap.getPixel(x, y)
+                          val red = Color.red(pixel)
+                          val green = Color.green(pixel)
+                          val blue = Color.blue(pixel)
+
+                          // 偵測類似深色半透明背景框或白字像素
+                          if (red < 50 && green < 50 && blue < 50) {
+                              targetPixelCount++
                           }
                       }
                   }
+
+                  // 如果採樣點達到一定數量，判定為廣告浮動框出現
+                  return targetPixelCount > 8
               }
 
-              private fun hasAdText(node: AccessibilityNodeInfo?): Boolean {
-                  if (node == null) return false
-                  val text = node.text?.toString() ?: ""
-                  val contentDesc = node.contentDescription?.toString() ?: ""
-
-                  for (keyword in adKeywords) {
-                      if (text.contains(keyword, ignoreCase = true) || 
-                          contentDesc.contains(keyword, ignoreCase = true)) {
-                          return true
-                      }
-                  }
-
-                  for (i in 0 until node.childCount) {
-                      if (hasAdText(node.getChild(i))) return true
-                  }
-                  return false
-              }
-
-              private fun isPauseScreen(node: AccessibilityNodeInfo?): Boolean {
-                  if (node == null) return false
-                  val text = node.text?.toString() ?: ""
-                  val contentDesc = node.contentDescription?.toString() ?: ""
-
-                  for (ignoreWord in pauseIgnoreKeywords) {
-                      if (text.contains(ignoreWord, ignoreCase = true) || 
-                          contentDesc.contains(ignoreWord, ignoreCase = true)) {
-                          return true
-                      }
-                  }
-
-                  for (i in 0 until node.childCount) {
-                      if (isPauseScreen(node.getChild(i))) return true
-                  }
-                  return false
+              override fun onInterrupt() {
+                  handler.removeCallbacks(screenshotRunnable)
               }
 
               override fun onDestroy() {
                   super.onDestroy()
-                  handler.removeCallbacks(scanRunnable)
-              }
-
-              override fun onInterrupt() {
-                  handler.removeCallbacks(scanRunnable)
+                  handler.removeCallbacks(screenshotRunnable)
               }
           }
           EOF
