@@ -55,8 +55,8 @@ jobs:
                   applicationId "com.example.tvadskipper"
                   minSdk 21
                   targetSdk 34
-                  versionCode 6
-                  versionName "1.5"
+                  versionCode 7
+                  versionName "1.6"
               }
 
               compileOptions {
@@ -122,22 +122,25 @@ jobs:
 
               private val handler = Handler(Looper.getMainLooper())
               private var lastTriggerTime = 0L
-              private val cooldownMillis = 2000L
+              private val cooldownMillis = 3000L
 
-              // 針對 StreamFlix 抓到的廣告專屬元件 ID
-              private val targetAdOverlayId = "com.streamflixtv.brave.retreat:id/utv_ad_overlay"
-              private val targetSkipButtonId = "com.streamflixtv.brave.retreat:id/tv_utv_player_ad_skip"
+              // 結合先前抓到的 utv_ad_overlay ID 與常見的廣告/秒數關鍵字
+              private val adKeywords = listOf(
+                  "utv_ad_overlay", "tv_utv_player_ad_skip",
+                  "按广告", "广告返回", "按廣告", "廣告返回",
+                  "跳过", "秒后", "跳過", "秒後"
+              )
 
               private val scanRunnable = object : Runnable {
                   override fun run() {
                       checkAndSkipAds()
-                      handler.postDelayed(this, 500) // 每 0.5 秒檢查一次
+                      handler.postDelayed(this, 400) // 每 0.4 秒高速巡邏一次
                   }
               }
 
               override fun onServiceConnected() {
                   super.onServiceConnected()
-                  Toast.makeText(applicationContext, "StreamFlix 廣告秒殺專用外掛已啟動！", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(applicationContext, "StreamFlix 廣告終極秒殺版已啟動！", Toast.LENGTH_SHORT).show()
                   handler.post(scanRunnable)
               }
 
@@ -150,41 +153,54 @@ jobs:
                   if (currentTime - lastTriggerTime < cooldownMillis) return
 
                   val root = rootInActiveWindow ?: return
-                  
-                  // 1. 尋找廣告專屬圖層或跳過按鈕
-                  val skipNode = findNodeById(root, targetSkipButtonId)
-                  val overlayNode = findNodeById(root, targetAdOverlayId)
+                  if (hasAdElement(root)) {
+                      triggerAdSkip()
+                      return
+                  }
 
-                  // 如果畫面中同時存在廣告圖層或跳過按鈕，代表廣告正在播放
-                  if (skipNode != null || overlayNode != null) {
-                      lastTriggerTime = currentTime
-
-                      handler.post {
-                          Toast.makeText(applicationContext, "偵測到串流廣告！秒殺中...", Toast.LENGTH_SHORT).show()
+                  for (window in windows) {
+                      if (hasAdElement(window.root)) {
+                          triggerAdSkip()
+                          return
                       }
-
-                      // 優先嘗試直接點擊右上角的「跳過/倒數」按鈕
-                      if (skipNode != null) {
-                          skipNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                      }
-
-                      // 雙重保險：直接發送返回鍵關閉廣告畫面
-                      performGlobalAction(GLOBAL_ACTION_BACK)
                   }
               }
 
-              private fun findNodeById(node: AccessibilityNodeInfo?, targetId: String): AccessibilityNodeInfo? {
-                  if (node == null) return null
-                  
-                  if (node.viewIdResourceName == targetId) {
-                      return node
+              private fun triggerAdSkip() {
+                  lastTriggerTime = System.currentTimeMillis()
+
+                  handler.post {
+                      Toast.makeText(applicationContext, "強制執行廣告返回！", Toast.LENGTH_SHORT).show()
+                  }
+
+                  // 執行系統無障礙返回
+                  performGlobalAction(GLOBAL_ACTION_BACK)
+
+                  // 雙重保險：透過執行緒額外補發一次，確保畫面退出
+                  handler.postDelayed({
+                      performGlobalAction(GLOBAL_ACTION_BACK)
+                  }, 300)
+              }
+
+              private fun hasAdElement(node: AccessibilityNodeInfo?): Boolean {
+                  if (node == null) return false
+
+                  val viewId = node.viewIdResourceName ?: ""
+                  val text = node.text?.toString() ?: ""
+                  val contentDesc = node.contentDescription?.toString() ?: ""
+
+                  for (keyword in adKeywords) {
+                      if (viewId.contains(keyword, ignoreCase = true) ||
+                          text.contains(keyword, ignoreCase = true) ||
+                          contentDesc.contains(keyword, ignoreCase = true)) {
+                          return true
+                      }
                   }
 
                   for (i in 0 until node.childCount) {
-                      val found = findNodeById(node.getChild(i), targetId)
-                      if (found != null) return found
+                      if (hasAdElement(node.getChild(i))) return true
                   }
-                  return null
+                  return false
               }
 
               override fun onDestroy() {
