@@ -55,8 +55,8 @@ jobs:
                   applicationId "com.example.tvadskipper"
                   minSdk 21
                   targetSdk 34
-                  versionCode 11
-                  versionName "2.0"
+                  versionCode 12
+                  versionName "2.1"
               }
 
               compileOptions {
@@ -124,64 +124,98 @@ jobs:
               private var lastTriggerTime = 0L
               private val cooldownMillis = 2000L
 
-              // 專門鎖定廣告框架與右上角跳過按鈕 ID[cite: 1]
-              private val targetSkipBtnId = "com.streamflixtv.brave.retreat:id/tv_utv_player_ad_skip"
-              private val targetOverlayId = "com.streamflixtv.brave.retreat:id/utv_ad_overlay"
+              // 精準對應畫面右上角出現的字眼
+              private val adKeywords = listOf(
+                  "按返回跳过", "按返回跳過", "按返回", "跳过", "跳過"
+              )
+
+              // 防誤觸排除清單：如果畫面上有暫停或繼續播放，絕對不按返回
+              private val pauseIgnoreKeywords = listOf(
+                  "繼續播放", "继续播放", "按返回繼續", "按返回继续", "暫停", "暂停"
+              )
 
               private val scanRunnable = object : Runnable {
                   override fun run() {
-                      checkAndClickSkip()
-                      handler.postDelayed(this, 300) // 每 0.3 秒檢查一次
+                      checkAndSkip()
+                      handler.postDelayed(this, 250) // 每 0.25 秒高速掃描
                   }
               }
 
               override fun onServiceConnected() {
                   super.onServiceConnected()
-                  Toast.makeText(applicationContext, "StreamFlix 安全點擊跳過版已啟動！", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(applicationContext, "極流TV廣告攔截已啟動！", Toast.LENGTH_SHORT).show()
                   handler.post(scanRunnable)
               }
 
               override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-                  checkAndClickSkip()
+                  checkAndSkip()
               }
 
-              private fun checkAndClickSkip() {
+              private fun checkAndSkip() {
                   val currentTime = System.currentTimeMillis()
                   if (currentTime - lastTriggerTime < cooldownMillis) return
 
                   val root = rootInActiveWindow ?: return
-                  
-                  // 尋找右上角跳過按鈕[cite: 1]
-                  var skipNode = findNodeById(root, targetSkipBtnId)
-                  if (skipNode == null) {
-                      for (window in windows) {
-                          skipNode = findNodeById(window.root, targetSkipBtnId)
-                          if (skipNode != null) break
-                      }
-                  }
 
-                  // 如果找到跳過按鈕，直接對它發起模擬點擊（絕對不按返回鍵，絕不跳回首頁）
-                  if (skipNode != null) {
+                  // 1. 檢查是否處於手動暫停狀態，若是則略過
+                  if (isPauseScreen(root)) return
+
+                  // 2. 掃描畫面是否包含「按返回跳过」等關鍵字
+                  if (hasAdText(root)) {
                       lastTriggerTime = currentTime
 
                       handler.post {
-                          Toast.makeText(applicationContext, "精準點擊廣告跳過按鈕！", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(applicationContext, "偵測到返回跳過廣告，執行返回！", Toast.LENGTH_SHORT).show()
                       }
 
-                      skipNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                      skipNode.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                      // 強制執行全域返回鍵
+                      performGlobalAction(GLOBAL_ACTION_BACK)
+                  } else {
+                      // 檢查所有浮動視窗
+                      for (window in windows) {
+                          if (window.root != null && hasAdText(window.root)) {
+                              lastTriggerTime = currentTime
+                              performGlobalAction(GLOBAL_ACTION_BACK)
+                              break
+                          }
+                      }
                   }
               }
 
-              private fun findNodeById(node: AccessibilityNodeInfo?, targetId: String): AccessibilityNodeInfo? {
-                  if (node == null) return null
-                  if (node.viewIdResourceName == targetId) return node
+              private fun hasAdText(node: AccessibilityNodeInfo?): Boolean {
+                  if (node == null) return false
+                  val text = node.text?.toString() ?: ""
+                  val contentDesc = node.contentDescription?.toString() ?: ""
+
+                  for (keyword in adKeywords) {
+                      if (text.contains(keyword, ignoreCase = true) || 
+                          contentDesc.contains(keyword, ignoreCase = true)) {
+                          return true
+                      }
+                  }
 
                   for (i in 0 until node.childCount) {
-                      val found = findNodeById(node.getChild(i), targetId)
-                      if (found != null) return found
+                      if (hasAdText(node.getChild(i))) return true
                   }
-                  return null
+                  return false
+              }
+
+              private fun isPauseScreen(node: AccessibilityNodeInfo?): Boolean {
+                  if (node == null) return false
+                  val text = node.text?.toString() ?: ""
+                  val contentDesc = node.contentDescription?.toString() ?: ""
+
+                  for (ignoreWord in pauseIgnoreKeywords) {
+                      if (text.contains(ignoreWord, ignoreCase = true) || 
+                          contentDesc.contains(ignoreWord, ignoreCase = true)) {
+                          return true
+                      }
+                  }
+
+                  for (i in 0 until node.childCount) {
+                      if (isPauseScreen(node.getChild(i))) return true
+                  }
+                  return false
               }
 
               override fun onDestroy() {
