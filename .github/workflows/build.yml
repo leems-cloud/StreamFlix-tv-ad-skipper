@@ -55,8 +55,8 @@ jobs:
                   applicationId "com.example.tvadskipper"
                   minSdk 21
                   targetSdk 34
-                  versionCode 8
-                  versionName "1.7"
+                  versionCode 10
+                  versionName "1.9"
               }
 
               compileOptions {
@@ -122,71 +122,59 @@ jobs:
 
               private val handler = Handler(Looper.getMainLooper())
               private var lastTriggerTime = 0L
-              private val cooldownMillis = 2000L
+              private val cooldownMillis = 2500L
 
-              // 鎖定你剛才抓到的廣告容器與跳過按鈕 ID[cite: 1]
+              // 鎖定 StreamFlix 專屬廣告容器 ID
               private val targetOverlayId = "com.streamflixtv.brave.retreat:id/utv_ad_overlay"
-              private val targetSkipBtnId = "com.streamflixtv.brave.retreat:id/tv_utv_player_ad_skip"
 
               private val scanRunnable = object : Runnable {
                   override fun run() {
-                      checkAndDestroyAd()
-                      handler.postDelayed(this, 300) // 每 0.3 秒極速巡邏
+                      checkAndPressBack()
+                      handler.postDelayed(this, 300) // 每 0.3 秒檢查一次
                   }
               }
 
               override fun onServiceConnected() {
                   super.onServiceConnected()
-                  Toast.makeText(applicationContext, "StreamFlix 廣告強力點擊版已啟動！", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(applicationContext, "StreamFlix 強制返回鍵破解版已啟動！", Toast.LENGTH_SHORT).show()
                   handler.post(scanRunnable)
               }
 
               override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-                  checkAndDestroyAd()
+                  checkAndPressBack()
               }
 
-              private fun checkAndDestroyAd() {
+              private fun checkAndPressBack() {
                   val currentTime = System.currentTimeMillis()
                   if (currentTime - lastTriggerTime < cooldownMillis) return
 
                   val root = rootInActiveWindow ?: return
-                  
-                  // 尋找右上角跳過按鈕或廣告容器[cite: 1]
-                  val skipNode = findNodeById(root, targetSkipBtnId)
                   val overlayNode = findNodeById(root, targetOverlayId)
 
-                  if (skipNode != null || overlayNode != null) {
+                  // 同時檢查浮動視窗
+                  var foundInWindow = false
+                  if (overlayNode == null) {
+                      for (window in windows) {
+                          if (findNodeById(window.root, targetOverlayId) != null) {
+                              foundInWindow = true
+                              break
+                          }
+                      }
+                  }
+
+                  // 只要偵測到廣告容器存在
+                  if (overlayNode != null || foundInWindow) {
                       lastTriggerTime = currentTime
 
                       handler.post {
-                          Toast.makeText(applicationContext, "正在強制點擊並關閉廣告...", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(applicationContext, "偵測到廣告畫面，強制發送返回鍵！", Toast.LENGTH_SHORT).show()
                       }
 
-                      // 招式 1：如果抓到右上角「跳過按鈕」，直接對它發起點擊
-                      if (skipNode != null) {
-                          skipNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                          // 有時候節點的父容器才是實際接收點擊的元件，一併點擊
-                          skipNode.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                      }
-
-                      // 招式 2：如果抓到整個廣告容器，嘗試點擊它或它的子元件
-                      if (overlayNode != null) {
-                          overlayNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                      }
-
-                      // 招式 3：雙管齊下，同時發送全域返回鍵
+                      // 連續發送兩次返回，確保把廣告視窗關掉
                       performGlobalAction(GLOBAL_ACTION_BACK)
-                  }
-
-                  // 額外掃描所有浮動視窗
-                  for (window in windows) {
-                      val winSkipNode = findNodeById(window.root, targetSkipBtnId)
-                      if (winSkipNode != null) {
-                          lastTriggerTime = currentTime
-                          winSkipNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                      handler.postDelayed({
                           performGlobalAction(GLOBAL_ACTION_BACK)
-                          break
-                      }
+                      }, 150)
                   }
               }
 
